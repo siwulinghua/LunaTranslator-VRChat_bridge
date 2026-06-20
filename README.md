@@ -20,7 +20,7 @@
 
 ### 下载 Release（推荐）
 
-从 [Releases](https://github.com/siwulinghua/LunaTranslator-VRChat_bridge/releases) 下载 `桥接器.zip`，解压后运行 `桥接器.exe`。
+从 [Releases](https://github.com/siwulinghua/LunaTranslator-VRChat_bridge/releases) 下载 `LunaVRC_Bridge_v0.9.zip`，解压后运行 `LunaVRC_Bridge.exe`。
 
 ### 从源码运行
 
