@@ -1,4 +1,26 @@
-"""LunaTranslator 与 VRChat 桥接器 - UI 界面"""
+"""LunaTranslator 与 VRChat 桥接器 - UI 界面
+
+## 回调链
+  用户操作               → 回调              → 效果
+  ────────────────────────────────────────────────────────
+  浏览 Luna.exe          → _browse_luna()    → 填入路径 + 探测 config
+  📋 读取接口信息        → _read_luna_config() → 读取端口填入 WS 栏
+  🚀 启动 LunaTranslator → _launch_luna()    → 改配置 → 启动 exe → _start_bridge()
+  ▶ 启动桥接             → _start_bridge()   → 采集 UI → 保存配置 → 启动 BridgeCore
+  ⏹ 停止桥接             → _stop_bridge()    → 停止 BridgeCore
+  关闭窗口               → _on_close()       → _save_all_config() → 停止 → destroy
+
+## 保存流程（统一入口）
+  _start_bridge()      ─┐
+  _on_close() → _save_all_config() ─┤
+                         └→ _collect_ui_params() 采集 UI
+                         └→ self.cfg.update()    更新内存
+                         └→ _save_config_to_disk() 写入文件 (唯一写入口)
+
+## 日志机制
+  BridgeCore 通过 log_queue 向 UI 发送 (level, msg)
+  _poll_logs() 每 200ms 轮询队列，更新 text_log 控件
+"""
 import os
 import json
 import queue
@@ -7,7 +29,7 @@ import webbrowser
 import customtkinter as ctk
 from tkinter import filedialog, messagebox
 
-from bridge_core import BridgeCore, load_config, save_config
+from bridge_core import BridgeCore, load_config, save_config, get_base_dir
 
 # ================= 主题设置 =================
 ctk.set_appearance_mode("dark")
@@ -198,31 +220,41 @@ def ipport_to_urls(ip: str, port: int) -> tuple[str, str]:
 
 # ================= 主界面 =================
 class BridgeApp(ctk.CTk):
+    """主窗口（customtkinter）
+
+    初始化流程：
+      1. load_config() 加载 exe 旁的 config.json
+      2. 解析 WS URL 得到 IP/端口，填入 UI
+      3. _build_ui() 创建所有控件
+      4. _poll_logs() 启动 200ms 定时轮询
+      5. 注册 WM_DELETE_WINDOW → _on_close
+    """
+
     def __init__(self):
         super().__init__()
         self.title("LunaTranslator 与 VRChat 桥接器")
         self.geometry("580x700")
         self.minsize(500, 550)
 
-        # 桥接核心
+        # 桥接核心（None 表示未启动）
         self.bridge: BridgeCore | None = None
         self.log_queue: queue.Queue = queue.Queue()
 
-        # 加载已有配置
+        # 加载已有配置（exe 旁的 config.json）
         self.cfg = load_config()
         self._ws_ip, self._ws_port = url_to_ipport(self.cfg.get("luna_ws_origin", ""))
         self._saved_luna_path = self.cfg.get("luna_exe_path", "")
 
-        # LunaTranslator 路径记忆
+        # LunaTranslator 的 userconfig/config.json 路径缓存
         self._luna_config_path: str | None = None
 
         # 构建 UI
         self._build_ui()
 
-        # 启动日志轮询
+        # 启动日志轮询（200ms 间隔从 log_queue 取日志更新界面）
         self._poll_logs()
 
-        # 关闭时停止桥接
+        # 关闭窗口时保存配置并停止桥接
         self.protocol("WM_DELETE_WINDOW", self._on_close)
 
     # ========== UI 构建 ==========
@@ -416,13 +448,8 @@ class BridgeApp(ctk.CTk):
         self.text_log = ctk.CTkTextbox(self.frame_log, wrap="word", state="disabled")
         self.text_log.pack(fill="both", expand=True, padx=10, pady=(2, 10))
 
-    def _save_luna_path(self):
-        """更新内存中的 luna_exe_path，不立即写文件（由 _start_bridge / _save_all_config 统一写入）"""
-        path = self.entry_luna_path.get().strip()
-        if path and self.cfg.get("luna_exe_path") != path:
-            self.cfg["luna_exe_path"] = path
-
     # ========== 动作回调 ==========
+    # 以下方法由 UI 按钮的 command= 触发，运行在主线程
     def _browse_luna(self):
         path = filedialog.askopenfilename(
             title="选择 LunaTranslator.exe",
@@ -431,7 +458,6 @@ class BridgeApp(ctk.CTk):
         if path:
             self.entry_luna_path.delete(0, "end")
             self.entry_luna_path.insert(0, path)
-            self._save_luna_path()
             cfg_path = find_luna_config(path)
             if cfg_path:
                 self._luna_config_path = cfg_path
@@ -519,7 +545,6 @@ class BridgeApp(ctk.CTk):
             cfg_path = find_luna_config(exe_path)
 
         try:
-            self._save_luna_path()
             if self.check_auto_sr.get() and cfg_path:
                 # 音频设备选择已禁用，不传 audio_source，在 LunaTranslator 中手动选择
                 enable_luna_ws_and_sr(cfg_path)
@@ -535,7 +560,11 @@ class BridgeApp(ctk.CTk):
             messagebox.showerror("错误", f"启动失败: {e}")
 
     def _collect_ui_params(self):
-        """从 UI 控件采集所有参数，返回 dict；校验失败抛 ValueError"""
+        """从 8 个 UI 控件采集配置 → dict
+
+        数值转换 (int/float) 失败会抛 ValueError，调用方自行处理
+        返回的 dict 键名与 config.json 完全一致
+        """
         ws_ip = self.entry_ws_ip.get().strip()
         ws_port = int(self.entry_ws_port.get().strip())
         origin_url, trans_url = ipport_to_urls(ws_ip, ws_port)
@@ -551,22 +580,32 @@ class BridgeApp(ctk.CTk):
         }
 
     def _start_bridge(self):
+        """启动桥接：采集 UI → 保存配置 → 创建 BridgeCore → 启动后台线程
+
+        参数校验失败则弹窗阻止，不启动
+        """
+        # 1. 从 UI 采集参数，校验数值
         try:
             self.cfg.update(self._collect_ui_params())
         except ValueError as e:
             messagebox.showerror("参数错误", f"请检查数值输入: {e}")
             return
 
-        save_config(self.cfg)
-        self.bridge = BridgeCore(dict(self.cfg), log_queue=self.log_queue)
-        self.bridge.start()
+        # 2. 保存到 config.json
+        self._save_config_to_disk()
 
+        # 3. 创建 BridgeCore（传 dict 副本避免共享引用）
+        self.bridge = BridgeCore(dict(self.cfg), log_queue=self.log_queue)
+        self.bridge.start()  # 启动后台 asyncio 线程
+
+        # 4. 更新 UI 状态
         self.btn_start.configure(state="disabled")
         self.btn_stop.configure(state="normal")
         self.label_bridge_status.configure(text="桥接器: ● 运行中", text_color="green")
-        self._set_params_state("disabled")
+        self._set_params_state("disabled")  # 运行时锁定参数
 
     def _stop_bridge(self):
+        """停止桥接：取消协程 → 停止 event loop → 等待线程退出"""
         if self.bridge:
             self.bridge.stop()
             self.bridge = None
@@ -577,6 +616,7 @@ class BridgeApp(ctk.CTk):
         self._set_params_state("normal")
 
     def _set_params_state(self, state: str):
+        """锁定/解锁参数输入框（运行时禁止修改 WS/OSC 参数）"""
         widgets = [
             self.entry_ws_ip, self.entry_ws_port,
             self.entry_osc_ip, self.entry_osc_port,
@@ -597,7 +637,12 @@ class BridgeApp(ctk.CTk):
         self.text_log.configure(state="disabled")
 
     def _poll_logs(self):
-        """定时从 log_queue 取日志，驱动 UI 更新"""
+        """每 200ms 从 log_queue 取日志，更新 text_log 和状态灯
+
+        这是 UI 与 BridgeCore 后台线程的唯一通信通道：
+          BridgeCore._log() → log_queue.put() → _poll_logs() 消费
+        消息驱动 Luna 连接状态灯（根据 WebSocket 连接/断开日志关键字）
+        """
         while not self.log_queue.empty():
             try:
                 level, msg = self.log_queue.get_nowait()
@@ -621,19 +666,34 @@ class BridgeApp(ctk.CTk):
         self.after(200, self._poll_logs)
 
     def _on_close(self):
-        self._save_luna_path()
+        """窗口关闭回调：保存配置 → 停止桥接 → 销毁窗口"""
         self._save_all_config()
-        if self.bridge and self.bridge.is_running:
+        if self.bridge:
             self.bridge.stop()
+            self.bridge = None
         self.destroy()
 
+    # ========== 配置保存（唯一写入路径） ==========
+    def _save_config_to_disk(self):
+        """将 self.cfg 写入 config.json（不采集 UI）
+
+        调用方必须先用 _collect_ui_params() + cfg.update() 更新 cfg
+        这是项目唯一的 config.json 写入入口
+        """
+        save_config(self.cfg)
+        cfg_path = os.path.join(get_base_dir(), "config.json")
+        self._append_log("info", f"💾 已保存配置到 {cfg_path}")
+
     def _save_all_config(self):
-        """保存所有 UI 参数到 config.json（关闭时调用）"""
+        """采集 UI → 更新 cfg → 保存（关闭窗口时调用）
+
+        ValueError 时跳过采集但保留已有值，避免丢失之前保存的配置
+        """
         try:
             self.cfg.update(self._collect_ui_params())
-            save_config(self.cfg)
-        except (ValueError, Exception):
-            pass  # 参数无效时跳过，不覆盖已有配置
+        except ValueError:
+            pass  # UI 异常时仍保存已有值
+        self._save_config_to_disk()
 
 
 # ================= 入口 =================
