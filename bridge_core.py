@@ -30,6 +30,7 @@ def load_config():
         "vrchat_osc_port": 9000,
         "chatbox_max_len": 140,
         "reconnect_delay": 3.0,
+        "luna_exe_path": "",
     }
     if os.path.exists(cfg_path):
         with open(cfg_path, "r", encoding="utf-8") as f:

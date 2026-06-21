@@ -5,5 +5,6 @@
     "vrchat_osc_ip": "127.0.0.1",
     "vrchat_osc_port": 9000,
     "chatbox_max_len": 140,
-    "reconnect_delay": 3.0
+    "reconnect_delay": 3.0,
+    "luna_exe_path": ""
 }

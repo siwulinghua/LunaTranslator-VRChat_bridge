@@ -14,7 +14,7 @@
 ## 语音识别说明
 
 - 本桥接器依赖 LunaTranslator 的语音识别和翻译功能。
-- **音频来源**：建议在 LunaTranslator 中设置为「回环录制」以捕获系统音频（如 VRChat 的声音），或者设置为「麦克风」以捕获麦克风音频。如见不到音频来源设置，请看[此文章](https://www.bilibili.com/opus/1085051989043183623)
+- **音频来源**：建议在 LunaTranslator 中设置为「回环录制」以捕获系统音频（如 VRChat 的声音），或者设置为「麦克风」以捕获麦克风音频。相关设置请看[此文章](https://docs.lunatranslator.org/zh/sr.html)
 
 ## 使用方法
 
